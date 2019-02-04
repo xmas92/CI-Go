@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto"
 	"encoding/json"
@@ -225,16 +224,14 @@ func main() {
 }
 
 func buildHandler(writer http.ResponseWriter, request *http.Request) {
-	renderTemplate(writer, "build", &Build{SHA: "TEST", Branch: "Test/1", RepoFullName: "testREPO"});
+	sha := strings.TrimPrefix(request.URL.Path, "/build/")
+	b := getBuilds(sha)
+	renderTemplate(writer, "build", &BuildsForSHA{SHA:sha, Builds:b });
 }
 
 func buildsHandler(writer http.ResponseWriter, request *http.Request) {
-	renderTemplate(writer, "builds", &Builds{
-		[]Build{
-			{SHA: "TEST", Branch: "Test/1", RepoFullName: "testREPO"},
-			{SHA: "TEST", Branch: "Test/1", RepoFullName: "testREPO"},
-		},
-	});
+	getBuildsDescending()
+	renderTemplate(writer, "builds", &Builds{Builds:getBuildsDescending()});
 }
 
 func handler(writer http.ResponseWriter, request *http.Request) {
@@ -259,7 +256,7 @@ func handleWebHook(writer http.ResponseWriter, request *http.Request) {
 	case github.PushPayload:
 		push := payload.(github.PushPayload)
 		for _, c := range push.Commits {
-			log.Println("Create build", c.Sha, push.Repository.FullName)
+			log.Println("Create build", c.ID, push.Repository.FullName)
 			go build(makeBuild(c.ID, push.Repository.FullName, strings.TrimPrefix(push.Ref, "refs/heads/")))
 		}
 
@@ -281,7 +278,7 @@ func buildError(build Build, err error) {
 	build.Message = "Error. See log"
 	addBuild(build)
 	postGithubStatus(build)
-	log.Fatal(err)
+	log.Println(err)
 }
 
 func build(build Build) {
@@ -310,42 +307,35 @@ func build(build Build) {
 		postGithubStatus(build)
 
 		cmd := exec.Command("git",
+			"clone",
 			"--branch="+build.Branch,
 			"https://token:"+os.Getenv("MY_PERSONAL_TOKEN")+"@github.com/"+build.RepoFullName+".git",
 			"repo")
-		log.Println("git --branch="+build.Branch+
-			"https://github.com/"+build.RepoFullName+".git")
+		log.Println("git clone --branch="+build.Branch+
+			" https://github.com/"+build.RepoFullName+".git")
 		build.BuildLog = append(build.BuildLog, "git --branch="+build.Branch+
-			"https://github.com/"+build.RepoFullName+".git")
+			" https://github.com/"+build.RepoFullName+".git")
 
 		repoDir, err := os.Getwd()
 		if err != nil {
+			os.RemoveAll(repoDir)
 			buildError(build,err)
+			return
 		}
 		repoDir += string(os.PathSeparator) + "repo"
 
-		out, err := cmd.StdoutPipe()
+		out, err := cmd.Output()
+
 		if err != nil {
-			buildError(build,err)
-		}
-		scanner := bufio.NewScanner(out)
-
-		if err = cmd.Run(); err != nil {
-			buildError(build,err)
-		}
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			log.Println(line)
-			build.BuildLog = append(build.BuildLog, line)
-		}
-
-		if err = cmd.Wait(); err != nil {
 			if _, ok := err.(*exec.ExitError); ok {
 				goto end
 			}
+			os.RemoveAll(repoDir)
 			buildError(build,err)
+			return
 		}
+		log.Println(string(out))
+		build.BuildLog = append(build.BuildLog, strings.Split(string(out),"\n")...)
 
 		cmd = exec.Command("git",
 			"reset", "--hard", build.SHA)
@@ -353,86 +343,58 @@ func build(build Build) {
 		build.BuildLog = append(build.BuildLog, "git reset --hard " + build.SHA)
 		cmd.Dir = repoDir
 
-		out, err = cmd.StdoutPipe()
+
+		out, err = cmd.Output()
+
 		if err != nil {
-			buildError(build,err)
-		}
-		scanner = bufio.NewScanner(out)
-
-		if err = cmd.Run(); err != nil {
-			buildError(build,err)
-		}
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			log.Println(line)
-			build.BuildLog = append(build.BuildLog, line)
-		}
-
-		if err = cmd.Wait(); err != nil {
 			if _, ok := err.(*exec.ExitError); ok {
 				goto end
 			}
+			os.RemoveAll(repoDir)
 			buildError(build,err)
+			return
 		}
+		log.Println(string(out))
+		build.BuildLog = append(build.BuildLog, strings.Split(string(out),"\n")...)
 
 		cmd = exec.Command("go",
-			"build")
-		log.Println("go build")
-		build.BuildLog = append(build.BuildLog, "go build" + build.SHA)
+			"build", "-v")
+		log.Println("go build -v")
+		build.BuildLog = append(build.BuildLog, "go build -v")
 		cmd.Dir = repoDir
 
-		out, err = cmd.StdoutPipe()
+		out, err = cmd.Output()
+
 		if err != nil {
-			buildError(build,err)
-		}
-		scanner = bufio.NewScanner(out)
-
-		if err = cmd.Run(); err != nil {
-			buildError(build,err)
-		}
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			log.Println(line)
-			build.BuildLog = append(build.BuildLog, line)
-		}
-
-		if err = cmd.Wait(); err != nil {
 			if _, ok := err.(*exec.ExitError); ok {
 				goto end
 			}
+			os.RemoveAll(repoDir)
 			buildError(build,err)
+			return
 		}
+		log.Println(string(out))
+		build.BuildLog = append(build.BuildLog, strings.Split(string(out),"\n")...)
 
 		cmd = exec.Command("go",
-			"test")
-		log.Println("go test")
-		build.BuildLog = append(build.BuildLog, "go test" + build.SHA)
+			"test", "-v")
+		log.Println("go test -v")
+		build.BuildLog = append(build.BuildLog, "go test -v")
 		cmd.Dir = repoDir
 
-		out, err = cmd.StdoutPipe()
+		out, err = cmd.Output()
+
 		if err != nil {
-			buildError(build,err)
-		}
-		scanner = bufio.NewScanner(out)
-
-		if err = cmd.Run(); err != nil {
-			buildError(build,err)
-		}
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			log.Println(line)
-			build.BuildLog = append(build.BuildLog, line)
-		}
-
-		if err = cmd.Wait(); err != nil {
 			if _, ok := err.(*exec.ExitError); ok {
 				goto end
 			}
+			os.RemoveAll(repoDir)
 			buildError(build,err)
+			return
 		}
+		log.Println(string(out))
+		build.BuildLog = append(build.BuildLog, strings.Split(string(out),"\n")...)
+
 		end:
 			if _, ok := err.(*exec.ExitError); ok {
 				build.Message = "Build Failure"
@@ -442,6 +404,7 @@ func build(build Build) {
 				build.Status = Success
 			}
 			build.EndDate = time.Now()
+			os.RemoveAll(repoDir)
 			addBuild(build)
 			postGithubStatus(build)
 	}

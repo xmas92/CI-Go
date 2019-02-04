@@ -2,13 +2,23 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>{{.SHA}} - {{.RepoFullName}}({{.Branch}})</title>
+    <title>{{.SHA}}</title>
 </head>
 <body>
-<h1>{{.SHA}} - {{.RepoFullName}}({{.Branch}})</h1>
+<p>[<a href="/builds/">Back</a>]</p>
+<h1>{{.SHA}}</h1>
 
-<p>[<a href="/build/{{.SHA}}">{{.SHA}}</a>]</p>
-
-<div>{{.Message}}</div>
+{{range .Builds}}
+    <div>{{.SHA}}({{.Status}}): {{.Message}}</div>
+    <div>{{.CreateDate}}</div>
+    <div>{{.StartDate}}</div>
+    <div>{{.EndDate}}</div>
+    <div>{{.RepoFullName}} ( {{.EndDate}} )</div>
+    <p>
+        {{range .BuildLog}}
+            {{.}}<br>
+        {{end}}
+    </p>
+{{end}}
 </body>
 </html>
